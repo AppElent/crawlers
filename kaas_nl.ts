@@ -1,9 +1,8 @@
 import {
-    CheerioCrawler,
+    PlaywrightCrawler,
     Dataset,
     RequestQueue,
     KeyValueStore,
-    type CheerioCrawlingContext,
 } from 'crawlee';
 
 type Label = 'LIST' | 'DETAIL';
@@ -15,8 +14,15 @@ interface Product {
     description?: string;
 }
 
-const startUrls: string[] = [
-    'https://www.kaas.nl/kazen',
+const BASE_URL = 'https://www.kaas.nl';
+const START_URL = `${BASE_URL}/kazen`;
+
+// Kandidaat-selectors voor kaaslinks op lijstpagina (WooCommerce patronen)
+const LINK_SELECTORS = [
+    '.cat-cheese a',
+    '.products .product a.woocommerce-loop-product__link',
+    '.products .product a[href*="/kazen/"]',
+    'ul.products li.product a[href*="/kazen/"]',
 ];
 
 async function run() {
@@ -24,12 +30,12 @@ async function run() {
     const store = await KeyValueStore.open('kazen-store');
 
     // 👉 load eerdere URLs
-    const stored = (await store.getValue<string[]>('seenUrls')) || [];
+    const stored = (await store.getValue<string[]>('seenUrls')) ?? [];
     const seen = new Set<string>(stored);
 
     // 👉 dataset voor nieuwe data
     const dataset = await Dataset.open('kazen-dataset');
-    
+
     async function isNew(url: string): Promise<boolean> {
         if (seen.has(url)) return false;
         seen.add(url);
@@ -37,42 +43,64 @@ async function run() {
     }
 
     // start URLs
-    for (const url of startUrls) {
-        await requestQueue.addRequest({
-            url,
-            label: 'LIST' as Label,
-        });
-    }
+    await requestQueue.addRequest({ url: START_URL, label: 'LIST' });
 
-    const crawler = new CheerioCrawler({
+    const crawler = new PlaywrightCrawler({
+        // Gedraag als echte browser (geen 403)
         requestQueue,
-        maxRequestsPerCrawl: 100,
+        launchContext: {
+            launchOptions: {
+                headless: true,
+            },
+        },
+        maxRequestsPerCrawl: 200,
+        requestHandlerTimeoutSecs: 60,
 
-        async requestHandler(ctx: CheerioCrawlingContext) {
-            const { request, $, enqueueLinks, log } = ctx;
+        async requestHandler({ request, page, enqueueLinks, log }) {
             const label = request.label as Label;
 
             if (label === 'LIST') {
                 log.info(`LIST: ${request.url}`);
 
-                // 🔗 detailpagina’s
-                await enqueueLinks({
-                    selector: '.cat-cheese a', // 👈 aanpassen
-                    label: 'DETAIL',
-                });
+                // Wacht tot producten geladen zijn
+                await page.waitForLoadState('networkidle');
 
-                const nextPage = $('a.facetwp-page.next[data-page]')
-                console.log(nextPage.attr('data-page'))
-                if (nextPage) {
-                    const nextUrl = `https://www.kaas.nl/kazen/?fwp_paged=${nextPage}`;
+                // Zoek werkende link-selector en enqueue detailpagina's
+                let enqueued = false;
+                for (const sel of LINK_SELECTORS) {
+                    const count = await page.locator(sel).count();
+                    if (count > 0) {
+                        log.info(`Kaaslinks gevonden met selector: "${sel}" (${count} stuks)`);
+                        await enqueueLinks({ selector: sel, label: 'DETAIL' });
+                        enqueued = true;
+                        break;
+                    }
+                }
 
+                if (!enqueued) {
+                    log.warning('Geen bekende link-selector gevonden, dump structuur...');
+                    const html = await page.content();
+                    log.info(`Page snippet:\n${html.substring(0, 3000)}`);
+                }
+
+                // Paginering via FacetWP
+                const nextPage = await page.locator('a.facetwp-page.active ~ a.facetwp-page').first();
+                const nextPageNum = await nextPage.getAttribute('data-page').catch(() => null);
+
+                if (nextPageNum) {
+                    const nextUrl = `${BASE_URL}/kazen/?fwp_paged=${nextPageNum}`;
                     log.info(`Volgende pagina: ${nextUrl}`);
-
-                    await requestQueue.addRequest({
-                        url: nextUrl,
-                        label: 'LIST',
-                        uniqueKey: nextUrl, // 👈 voorkomt duplicates
-                    });
+                    await requestQueue.addRequest({ url: nextUrl, label: 'LIST', uniqueKey: nextUrl });
+                } else {
+                    // Fallback: probeer "next" class
+                    const nextNum = await page.locator('a.facetwp-page.next')
+                        .getAttribute('data-page')
+                        .catch(() => null);
+                    if (nextNum) {
+                        const nextUrl = `${BASE_URL}/kazen/?fwp_paged=${nextNum}`;
+                        log.info(`Volgende pagina (fallback): ${nextUrl}`);
+                        await requestQueue.addRequest({ url: nextUrl, label: 'LIST', uniqueKey: nextUrl });
+                    }
                 }
             }
 
@@ -87,17 +115,13 @@ async function run() {
 
                 log.info(`NEW: ${url}`);
 
-                const title = $('h1').text().trim();
-                const price = $('.price').text().trim();
-                const description = $('.product-description').text().trim();
+                await page.waitForLoadState('networkidle');
 
-                const product: Product = {
-                    url,
-                    title,
-                    price,
-                    description,
-                };
+                const title = (await page.locator('h1').first().textContent())?.trim() ?? '';
+                const price = (await page.locator('.price').first().textContent().catch(() => ''))?.trim() ?? '';
+                const description = (await page.locator('.product-description').first().textContent().catch(() => ''))?.trim() ?? '';
 
+                const product: Product = { url, title, price, description };
                 await dataset.pushData(product);
             }
         },
@@ -109,7 +133,7 @@ async function run() {
     await dataset.exportToJSON('kazen.json');
 
     // 👉 save state
-    await store.setValue('seenUrls.json', Array.from(seen));
+    await store.setValue('seenUrls', Array.from(seen));
 
     console.log('✅ Incremental scrape klaar!');
 }
