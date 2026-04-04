@@ -1,117 +1,141 @@
-import {
-    CheerioCrawler,
-    Dataset,
-    RequestQueue,
-    KeyValueStore,
-    type CheerioCrawlingContext,
-} from 'crawlee';
+import { PlaywrightCrawler, Dataset, log } from 'crawlee';
 
 type Label = 'LIST' | 'DETAIL';
 
-interface Product {
+interface Cheese {
     url: string;
     title: string;
-    price?: string;
-    description?: string;
 }
 
-const startUrls: string[] = [
-    'https://www.kaas.nl/kazen',
+const BASE_URL = 'https://www.kaas.nl';
+const START_URL = `${BASE_URL}/kazen`;
+
+// Kandidaat-selectors voor kaastitels op lijstpagina (WooCommerce patronen)
+const TITLE_SELECTORS = [
+    '.woocommerce-loop-product__title',
+    'h2.product-title',
+    '.product-title',
+    '.cat-cheese .title',
+    'h3.product-title',
+    '.products .product h2',
+    '.products .product h3',
+    'ul.products li.product h2',
+];
+
+// Selector voor kaaslinks (detailpagina's)
+const PRODUCT_LINK_SELECTORS = [
+    '.products .product a.woocommerce-loop-product__link',
+    '.products .product a[href*="/kazen/"]',
+    '.cat-cheese a[href*="/kazen/"]',
+    'a[href*="/kazen/"]',
 ];
 
 async function run() {
-    const requestQueue = await RequestQueue.open();
-    const store = await KeyValueStore.open('kazen-store');
-
-    // 👉 load eerdere URLs
-    const stored = (await store.getValue<string[]>('seenUrls')) || [];
-    const seen = new Set<string>(stored);
-
-    // 👉 dataset voor nieuwe data
     const dataset = await Dataset.open('kazen-dataset');
-    
-    async function isNew(url: string): Promise<boolean> {
-        if (seen.has(url)) return false;
-        seen.add(url);
-        return true;
-    }
+    const collected = new Map<string, string>(); // url -> title
 
-    // start URLs
-    for (const url of startUrls) {
-        await requestQueue.addRequest({
-            url,
-            label: 'LIST' as Label,
-        });
-    }
+    const crawler = new PlaywrightCrawler({
+        // Gedraag als echte browser (geen 403)
+        launchContext: {
+            launchOptions: {
+                headless: true,
+            },
+        },
+        maxRequestsPerCrawl: 200,
+        requestHandlerTimeoutSecs: 60,
 
-    const crawler = new CheerioCrawler({
-        requestQueue,
-        maxRequestsPerCrawl: 100,
-
-        async requestHandler(ctx: CheerioCrawlingContext) {
-            const { request, $, enqueueLinks, log } = ctx;
+        async requestHandler({ request, page, enqueueLinks, log: crawlerLog }) {
             const label = request.label as Label;
 
             if (label === 'LIST') {
-                log.info(`LIST: ${request.url}`);
+                crawlerLog.info(`LIST: ${request.url}`);
 
-                // 🔗 detailpagina’s
-                await enqueueLinks({
-                    selector: '.cat-cheese a', // 👈 aanpassen
-                    label: 'DETAIL',
-                });
+                // Wacht tot producten geladen zijn
+                await page.waitForLoadState('networkidle');
 
-                const nextPage = $('a.facetwp-page.next[data-page]')
-                console.log(nextPage.attr('data-page'))
-                if (nextPage) {
-                    const nextUrl = `https://www.kaas.nl/kazen/?fwp_paged=${nextPage}`;
+                // Zoek werkende title-selector
+                let workingTitleSelector: string | null = null;
+                for (const sel of TITLE_SELECTORS) {
+                    const count = await page.locator(sel).count();
+                    if (count > 0) {
+                        workingTitleSelector = sel;
+                        crawlerLog.info(`Titles gevonden met selector: "${sel}" (${count} stuks)`);
+                        break;
+                    }
+                }
 
-                    log.info(`Volgende pagina: ${nextUrl}`);
+                if (!workingTitleSelector) {
+                    // Debug: dump de page-structuur om selectors te vinden
+                    crawlerLog.warning('Geen bekende title-selector gevonden, dump structuur...');
+                    const html = await page.content();
+                    const snippet = html.substring(0, 3000);
+                    crawlerLog.info(`Page snippet:\n${snippet}`);
+                } else {
+                    // Haal titels en URLs op van de lijstpagina
+                    const products = await page.evaluate((sel: string) => {
+                        const items: Array<{ title: string; url: string }> = [];
+                        document.querySelectorAll(sel).forEach((el) => {
+                            const title = el.textContent?.trim() ?? '';
+                            // Zoek dichtstbijzijnde link-element
+                            const link =
+                                el.closest('a') ??
+                                el.closest('li')?.querySelector('a') ??
+                                el.closest('.product')?.querySelector('a');
+                            const url = link ? (link as HTMLAnchorElement).href : '';
+                            if (title) items.push({ title, url });
+                        });
+                        return items;
+                    }, workingTitleSelector);
 
-                    await requestQueue.addRequest({
-                        url: nextUrl,
+                    for (const { title, url } of products) {
+                        if (!collected.has(url)) {
+                            collected.set(url, title);
+                            crawlerLog.info(`  kaas: ${title}`);
+                        }
+                    }
+                }
+
+                // Paginering via FacetWP
+                const nextPage = await page.locator('a.facetwp-page.active ~ a.facetwp-page').first();
+                const nextPageNum = await nextPage.getAttribute('data-page').catch(() => null);
+
+                if (nextPageNum) {
+                    const nextUrl = `${BASE_URL}/kazen/?fwp_paged=${nextPageNum}`;
+                    crawlerLog.info(`Volgende pagina: ${nextUrl}`);
+                    await enqueueLinks({
+                        urls: [nextUrl],
                         label: 'LIST',
-                        uniqueKey: nextUrl, // 👈 voorkomt duplicates
                     });
+                } else {
+                    // Fallback: probeer "next" class
+                    const nextBtn = page.locator('a.facetwp-page.next');
+                    const nextNum = await nextBtn.getAttribute('data-page').catch(() => null);
+                    if (nextNum) {
+                        const nextUrl = `${BASE_URL}/kazen/?fwp_paged=${nextNum}`;
+                        crawlerLog.info(`Volgende pagina (fallback): ${nextUrl}`);
+                        await enqueueLinks({
+                            urls: [nextUrl],
+                            label: 'LIST',
+                        });
+                    }
                 }
-            }
-
-            if (label === 'DETAIL') {
-                const url = request.url;
-
-                // ❌ skip bestaande
-                if (!(await isNew(url))) {
-                    log.info(`SKIP: ${url}`);
-                    return;
-                }
-
-                log.info(`NEW: ${url}`);
-
-                const title = $('h1').text().trim();
-                const price = $('.price').text().trim();
-                const description = $('.product-description').text().trim();
-
-                const product: Product = {
-                    url,
-                    title,
-                    price,
-                    description,
-                };
-
-                await dataset.pushData(product);
             }
         },
     });
 
-    await crawler.run();
+    await crawler.run([{ url: START_URL, label: 'LIST' }]);
 
-    // 👇 alles naar 1 JSON file
+    // Sla alle kazen op als dataset
+    const cheeses: Cheese[] = Array.from(collected.entries()).map(([url, title]) => ({
+        url,
+        title,
+    }));
+
+    await dataset.pushData(cheeses);
     await dataset.exportToJSON('kazen.json');
 
-    // 👉 save state
-    await store.setValue('seenUrls.json', Array.from(seen));
-
-    console.log('✅ Incremental scrape klaar!');
+    console.log(`\n✅ Klaar! ${cheeses.length} kazen gevonden.`);
+    cheeses.forEach((c, i) => console.log(`  ${i + 1}. ${c.title}`));
 }
 
 run();
