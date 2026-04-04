@@ -1,4 +1,4 @@
-import { PlaywrightCrawler, Dataset, log } from 'crawlee';
+import { PlaywrightCrawler, Dataset, KeyValueStore } from 'crawlee';
 
 type Label = 'LIST' | 'DETAIL';
 
@@ -22,17 +22,13 @@ const TITLE_SELECTORS = [
     'ul.products li.product h2',
 ];
 
-// Selector voor kaaslinks (detailpagina's)
-const PRODUCT_LINK_SELECTORS = [
-    '.products .product a.woocommerce-loop-product__link',
-    '.products .product a[href*="/kazen/"]',
-    '.cat-cheese a[href*="/kazen/"]',
-    'a[href*="/kazen/"]',
-];
-
 async function run() {
     const dataset = await Dataset.open('kazen-dataset');
-    const collected = new Map<string, string>(); // url -> title
+    const store = await KeyValueStore.open('kazen-store');
+
+    // Laad eerder geziene URLs zodat we niets dubbel scrapen
+    const stored = (await store.getValue<string[]>('seenUrls')) ?? [];
+    const seen = new Set<string>(stored);
 
     const crawler = new PlaywrightCrawler({
         // Gedraag als echte browser (geen 403)
@@ -88,9 +84,12 @@ async function run() {
                     }, workingTitleSelector);
 
                     for (const { title, url } of products) {
-                        if (!collected.has(url)) {
-                            collected.set(url, title);
-                            crawlerLog.info(`  kaas: ${title}`);
+                        if (url && !seen.has(url)) {
+                            seen.add(url);
+                            await dataset.pushData({ url, title } satisfies Cheese);
+                            crawlerLog.info(`  nieuw: ${title}`);
+                        } else if (url) {
+                            crawlerLog.info(`  skip (al bekend): ${title}`);
                         }
                     }
                 }
@@ -125,17 +124,13 @@ async function run() {
 
     await crawler.run([{ url: START_URL, label: 'LIST' }]);
 
-    // Sla alle kazen op als dataset
-    const cheeses: Cheese[] = Array.from(collected.entries()).map(([url, title]) => ({
-        url,
-        title,
-    }));
+    // Sla geziene URLs op voor de volgende run
+    await store.setValue('seenUrls', Array.from(seen));
 
-    await dataset.pushData(cheeses);
     await dataset.exportToJSON('kazen.json');
 
-    console.log(`\n✅ Klaar! ${cheeses.length} kazen gevonden.`);
-    cheeses.forEach((c, i) => console.log(`  ${i + 1}. ${c.title}`));
+    const total = seen.size - stored.length; // nieuw toegevoegd deze run
+    console.log(`\n✅ Klaar! ${total} nieuwe kazen gevonden (${seen.size} totaal).`);
 }
 
 run();
