@@ -34,6 +34,50 @@ async function run() {
     }
 
     await requestQueue.addRequest({ url: START_URL, label: 'LIST' });
+
+    // const proxyConfiguration = new ProxyConfiguration({ proxyUrls: ['http://...'] });
+
+    const crawler = new PlaywrightCrawler({
+        requestQueue,
+
+        async requestHandler(ctx: PlaywrightCrawlingContext) {
+            const { request, page, log } = ctx;
+            const label = request.label as Label;
+
+            if (label === 'LIST') {
+                log.info(`LIST: ${request.url}`);
+
+                await page.waitForSelector('.cat-cheese');
+
+                // Collect all detail URLs from this page
+                const detailUrls = await page.$$eval(
+                    '.cat-cheese > a',
+                    (els) => els.map((el) => (el as HTMLAnchorElement).href),
+                );
+
+                for (const url of detailUrls) {
+                    await requestQueue.addRequest({ url, label: 'DETAIL' });
+                }
+
+                log.info(`Enqueued ${detailUrls.length} detail URLs`);
+
+                // Enqueue next page if pagination button exists
+                const nextPage = await page.$('a.facetwp-page.next');
+                if (nextPage) {
+                    const dataPage = await nextPage.getAttribute('data-page');
+                    if (dataPage) {
+                        const nextUrl = `https://www.kaas.nl/kazen/?fwp_paged=${dataPage}`;
+                        await requestQueue.addRequest({
+                            url: nextUrl,
+                            label: 'LIST',
+                            uniqueKey: nextUrl,
+                        });
+                        log.info(`Enqueued next page: ${nextUrl}`);
+                    }
+                }
+            }
+        },
+    });
 }
 
 run();
