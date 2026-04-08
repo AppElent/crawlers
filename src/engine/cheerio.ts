@@ -8,7 +8,9 @@ import {
 } from 'crawlee';
 import type { CheerioCrawlerConfig } from './types.ts';
 
-export async function runCheerioCrawler(config: CheerioCrawlerConfig): Promise<void> {
+export async function runCheerioCrawler(
+    config: CheerioCrawlerConfig,
+): Promise<void> {
     const queueName = config.queueName ?? `${config.storeName}-queue`;
     const requestQueue = await RequestQueue.open(queueName);
     const store = await KeyValueStore.open(config.storeName);
@@ -32,7 +34,10 @@ export async function runCheerioCrawler(config: CheerioCrawlerConfig): Promise<v
             if (label === 'LIST') {
                 log.info(`LIST: ${request.url}`);
 
-                await enqueueLinks({ selector: config.listSelector, label: 'DETAIL' });
+                await enqueueLinks({
+                    selector: config.listSelector,
+                    label: 'DETAIL',
+                });
 
                 let nextUrl: string | null = null;
                 if (config.extractNextUrl) {
@@ -42,7 +47,11 @@ export async function runCheerioCrawler(config: CheerioCrawlerConfig): Promise<v
                 }
 
                 if (nextUrl) {
-                    await requestQueue.addRequest({ url: nextUrl, label: 'LIST', uniqueKey: nextUrl });
+                    await requestQueue.addRequest({
+                        url: nextUrl,
+                        label: 'LIST',
+                        uniqueKey: nextUrl,
+                    });
                     log.info(`Enqueued next page: ${nextUrl}`);
                 }
             }
@@ -58,7 +67,9 @@ export async function runCheerioCrawler(config: CheerioCrawlerConfig): Promise<v
 
                 const record: Record<string, unknown> = { url };
 
-                for (const [fieldName, selector] of Object.entries(config.fields)) {
+                for (const [fieldName, selector] of Object.entries(
+                    config.fields,
+                )) {
                     record[fieldName] = $(selector).text().trim();
                 }
 
