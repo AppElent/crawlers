@@ -22,12 +22,12 @@ const START_URL = 'https://www.kaas.nl/kazen/';
 async function run() {
     const requestQueue = await RequestQueue.open('kaas-nl-v2-queue');
     const store = await KeyValueStore.open('kaas-nl-v2-store');
-    const dataset = await Dataset.open<Product>('kaas-nl-v2-dataset');
+    const _dataset = await Dataset.open<Product>('kaas-nl-v2-dataset');
 
     const stored = (await store.getValue<string[]>('seenUrls')) ?? [];
     const seen = new Set<string>(stored);
 
-    async function isNew(url: string): Promise<boolean> {
+    async function _isNew(url: string): Promise<boolean> {
         if (seen.has(url)) return false;
         seen.add(url);
         return true;
@@ -37,7 +37,7 @@ async function run() {
 
     // const proxyConfiguration = new ProxyConfiguration({ proxyUrls: ['http://...'] });
 
-    const crawler = new PlaywrightCrawler({
+    const _crawler = new PlaywrightCrawler({
         requestQueue,
 
         async requestHandler(ctx: PlaywrightCrawlingContext) {
@@ -79,7 +79,7 @@ async function run() {
             if (label === 'DETAIL') {
                 const url = request.url;
 
-                if (!(await isNew(url))) {
+                if (!(await _isNew(url))) {
                     log.info(`SKIP: ${url}`);
                     return;
                 }
@@ -122,15 +122,15 @@ async function run() {
                     flavor,
                     description,
                 };
-                await dataset.pushData(product);
+                await _dataset.pushData(product);
                 log.info(`Saved: ${title}`);
             }
         },
     });
 
-    await crawler.run();
+    await _crawler.run();
 
-    await dataset.exportToJSON('kaas_nl_v2.json');
+    await _dataset.exportToJSON('kaas_nl_v2.json');
     await store.setValue('seenUrls', Array.from(seen));
 
     console.log('Done. Results written to kaas_nl_v2.json');
