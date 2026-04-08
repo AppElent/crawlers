@@ -8,7 +8,9 @@ import {
 } from 'crawlee';
 import type { PlaywrightCrawlerConfig } from './types.ts';
 
-export async function runPlaywrightCrawler(config: PlaywrightCrawlerConfig): Promise<void> {
+export async function runPlaywrightCrawler(
+    config: PlaywrightCrawlerConfig,
+): Promise<void> {
     const queueName = config.queueName ?? `${config.storeName}-queue`;
     const requestQueue = await RequestQueue.open(queueName);
     const store = await KeyValueStore.open(config.storeName);
@@ -33,8 +35,9 @@ export async function runPlaywrightCrawler(config: PlaywrightCrawlerConfig): Pro
                 log.info(`LIST: ${request.url}`);
                 await page.waitForSelector(config.listSelector);
 
-                const detailUrls = await page.$$eval(config.listSelector, (els) =>
-                    els.map((el) => (el as HTMLAnchorElement).href),
+                const detailUrls = await page.$$eval(
+                    config.listSelector,
+                    (els) => els.map((el) => (el as HTMLAnchorElement).href),
                 );
 
                 for (const url of detailUrls) {
@@ -46,12 +49,19 @@ export async function runPlaywrightCrawler(config: PlaywrightCrawlerConfig): Pro
                     nextUrl = await config.extractNextUrl(page);
                 } else if (config.paginationSelector) {
                     nextUrl = await page
-                        .$eval(config.paginationSelector, (el) => (el as HTMLAnchorElement).href)
+                        .$eval(
+                            config.paginationSelector,
+                            (el) => (el as HTMLAnchorElement).href,
+                        )
                         .catch(() => null);
                 }
 
                 if (nextUrl) {
-                    await requestQueue.addRequest({ url: nextUrl, label: 'LIST', uniqueKey: nextUrl });
+                    await requestQueue.addRequest({
+                        url: nextUrl,
+                        label: 'LIST',
+                        uniqueKey: nextUrl,
+                    });
                     log.info(`Enqueued next page: ${nextUrl}`);
                 }
             }
@@ -67,7 +77,9 @@ export async function runPlaywrightCrawler(config: PlaywrightCrawlerConfig): Pro
 
                 const record: Record<string, unknown> = { url };
 
-                for (const [fieldName, selector] of Object.entries(config.fields)) {
+                for (const [fieldName, selector] of Object.entries(
+                    config.fields,
+                )) {
                     record[fieldName] = await page
                         .$eval(selector, (el) => el.textContent?.trim() ?? '')
                         .catch(() => '');

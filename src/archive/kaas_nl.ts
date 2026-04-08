@@ -1,9 +1,9 @@
 import {
     CheerioCrawler,
-    Dataset,
-    RequestQueue,
-    KeyValueStore,
     type CheerioCrawlingContext,
+    Dataset,
+    KeyValueStore,
+    RequestQueue,
 } from 'crawlee';
 
 type Label = 'LIST' | 'DETAIL';
@@ -15,9 +15,7 @@ interface Product {
     description?: string;
 }
 
-const startUrls: string[] = [
-    'https://www.kaas.nl/kazen',
-];
+const startUrls: string[] = ['https://www.kaas.nl/kazen'];
 
 async function run() {
     const requestQueue = await RequestQueue.open();
@@ -29,7 +27,7 @@ async function run() {
 
     // 👉 dataset voor nieuwe data
     const dataset = await Dataset.open('kazen-dataset');
-    
+
     async function isNew(url: string): Promise<boolean> {
         if (seen.has(url)) return false;
         seen.add(url);
@@ -61,8 +59,8 @@ async function run() {
                     label: 'DETAIL',
                 });
 
-                const nextPage = $('a.facetwp-page.next[data-page]')
-                console.log(nextPage.attr('data-page'))
+                const nextPage = $('a.facetwp-page.next[data-page]');
+                console.log(nextPage.attr('data-page'));
                 if (nextPage) {
                     const nextUrl = `https://www.kaas.nl/kazen/?fwp_paged=${nextPage}`;
 

@@ -1,8 +1,8 @@
 import {
-    PlaywrightCrawler,
-    type PlaywrightCrawlingContext,
     Dataset,
     KeyValueStore,
+    PlaywrightCrawler,
+    type PlaywrightCrawlingContext,
     RequestQueue,
     // ProxyConfiguration,  // uncomment to enable proxy rotation
 } from 'crawlee';
@@ -50,9 +50,8 @@ async function run() {
                 await page.waitForSelector('.cat-cheese');
 
                 // Collect all detail URLs from this page
-                const detailUrls = await page.$$eval(
-                    '.cat-cheese > a',
-                    (els) => els.map((el) => (el as HTMLAnchorElement).href),
+                const detailUrls = await page.$$eval('.cat-cheese > a', (els) =>
+                    els.map((el) => (el as HTMLAnchorElement).href),
                 );
 
                 for (const url of detailUrls) {
